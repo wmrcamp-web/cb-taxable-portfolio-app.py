@@ -236,10 +236,21 @@ def _run_pipeline(
     return benchmark_return, metrics, loadings, portfolio, metrics
 
 
+def _join_split_header(csv_text: str, required: list[str]) -> str:
+    # Pasted headers are sometimes wrapped onto several lines; rejoin them.
+    lines = [line.strip() for line in csv_text.splitlines() if line.strip()]
+    for count in range(1, min(4, len(lines)) + 1):
+        fields = {field.strip().upper() for field in "".join(lines[:count]).split(",")}
+        if set(required).issubset(fields):
+            return "\n".join(["".join(lines[:count]), *lines[count:]])
+    return "\n".join(lines)
+
+
 def _parse_holdings(csv_text: str) -> tuple[pd.DataFrame, list[str]]:
     required = ["TICKER", "ALLOCATION_PCT", "GAIN_PCT", "TERM"]
     if not csv_text.strip():
         return pd.DataFrame(columns=required), []
+    csv_text = _join_split_header(csv_text, required)
     holdings = pd.read_csv(io.StringIO(csv_text))
     holdings.columns = [str(column).strip().upper() for column in holdings.columns]
     if not set(required).issubset(holdings.columns):
