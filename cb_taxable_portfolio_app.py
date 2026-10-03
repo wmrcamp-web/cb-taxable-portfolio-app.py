@@ -122,12 +122,13 @@ def _run_pipeline(
     shadow_cutoff: float,
     target_size: int,
     must_go_in: list[str],
+    held_weights: dict[str, float],
 ) -> tuple[float, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     constituents = fetch_sp500_tickers()
     constituents = constituents.loc[constituents["GICS Sector"] != "Energy"].copy()
     sector_by_ticker = dict(zip(constituents["Symbol"], constituents["GICS Sector"]))
     eligible = [ticker for ticker in sector_by_ticker if ticker not in BANNED_TICKERS]
-    required = list(dict.fromkeys(ticker for ticker in must_go_in if ticker in sector_by_ticker))
+    required = list(dict.fromkeys(must_go_in))
 
     with st.spinner("Checking S&P 500 market capitalizations..."):
         sorted_tickers, market_caps = get_sorted_by_market_cap(tuple(eligible))
@@ -198,15 +199,18 @@ def _run_pipeline(
 
     factor_counts = {label: 0 for label in factor_labels.values()}
     chosen: list[str] = []
-    for ticker in required:
-        if ticker in metrics.index and len(chosen) < target_size:
+    held_weights = {t: w for t, w in held_weights.items() if t in required}
+    held_in_screen = [t for t in required if t in metrics.index]
+    limit = len(held_in_screen) + max(target_size - len(required), 0)
+    for ticker in held_in_screen:
+        if len(chosen) < limit:
             chosen.append(ticker)
             factor = metrics.loc[ticker, "Dominant_Factor"]
             factor_counts[factor] = factor_counts.get(factor, 0) + 1
 
     def add_candidate(ticker: str) -> None:
         factor = metrics.loc[ticker, "Dominant_Factor"]
-        if ticker not in chosen and factor_counts.get(factor, 0) < 3 and len(chosen) < target_size:
+        if ticker not in chosen and factor_counts.get(factor, 0) < 3 and len(chosen) < limit:
             chosen.append(ticker)
             factor_counts[factor] = factor_counts.get(factor, 0) + 1
 
@@ -214,7 +218,7 @@ def _run_pipeline(
         add_candidate(ticker)
     absolute_loadings = loadings.abs()
     for factor in loadings.columns:
-        if len(chosen) >= target_size:
+        if len(chosen) >= limit:
             break
         for ticker in absolute_loadings[factor].sort_values(ascending=False).index:
             if absolute_loadings.loc[ticker, factor] >= 0.5:
@@ -222,16 +226,22 @@ def _run_pipeline(
                 add_candidate(ticker)
                 if len(chosen) > before:
                     break
-    if len(chosen) < target_size:
+    if len(chosen) < limit:
         remaining = metrics.loc[~metrics.index.isin(chosen)].sort_values("Downside_Beta")
         for ticker in remaining.index:
             if ticker in shadow or metrics.loc[ticker, "Max_Factor_Loading"] >= 0.5:
                 add_candidate(ticker)
 
-    portfolio = metrics.loc[chosen].copy() if chosen else pd.DataFrame()
+    portfolio = metrics.reindex(list(dict.fromkeys(required + chosen))).copy() if (chosen or required) else pd.DataFrame()
     if not portfolio.empty:
-        portfolio["Weight (%)"] = round(100.0 / len(portfolio), 2)
+        new_picks = [t for t in portfolio.index if t not in held_weights]
+        remaining = max(100.0 - sum(held_weights.values()), 0.0)
+        portfolio["Weight (%)"] = [
+            held_weights[t] if t in held_weights else round(remaining / len(new_picks), 2)
+            for t in portfolio.index
+        ]
         portfolio["In_Shadow_List"] = portfolio.index.isin(shadow)
+        portfolio["Taxable_Holding"] = portfolio.index.isin(held_weights)
     metrics = metrics.sort_values("Market_Cap", ascending=False)
     return benchmark_return, metrics, loadings, portfolio, metrics
 
@@ -256,7 +266,7 @@ def _parse_holdings(csv_text: str) -> tuple[pd.DataFrame, list[str]]:
     if not set(required).issubset(holdings.columns):
         raise ValueError("CSV must include TICKER, ALLOCATION_PCT, GAIN_PCT, and TERM columns.")
     holdings = holdings[required].dropna(how="all").copy()
-    holdings["TICKER"] = holdings["TICKER"].astype("string").str.strip().str.upper()
+    holdings["TICKER"] = holdings["TICKER"].astype("string").str.strip().str.upper().str.replace(".", "-", regex=False)
     holdings["TERM"] = holdings["TERM"].astype("string").str.strip().str.upper()
     for column in ("ALLOCATION_PCT", "GAIN_PCT"):
         holdings[column] = pd.to_numeric(holdings[column], errors="coerce")
@@ -325,16 +335,6 @@ def main() -> None:
             tax_a, tax_b = sidebar.columns(2)
             tax_a.metric("Allocated", f"{holdings['ALLOCATION_PCT'].sum():.1f}%")
             tax_b.metric("Estimated tax drag", f"{holdings['TAX_DRAG'].sum():.2%}")
-            st.subheader("Taxable holdings")
-            st.dataframe(
-                holdings.style.format(
-                    {
-                        "ALLOCATION_PCT": "{:.2f}%", "GAIN_PCT": "{:.2f}%",
-                        "WEIGHTED_GAIN": "{:.2%}", "TAX_DRAG": "{:.2%}",
-                    }
-                ),
-                use_container_width=True,
-            )
     except (ValueError, pd.errors.ParserError) as error:
         sidebar.error(str(error))
         holdings, must_go_in = pd.DataFrame(), []
@@ -342,7 +342,7 @@ def main() -> None:
     with sidebar.expander("Selection constraints"):
         st.markdown(
             "- Excludes energy, gold, bitcoin-related tickers, and GOOG\n"
-            "- Equal-weight allocation\n"
+            "- Taxable holdings keep their allocation and count toward the target size; new picks split the remaining % equally\n"
             "- Maximum three holdings per dominant factor\n"
             "- Taxable holdings are prioritized when eligible"
         )
@@ -359,6 +359,7 @@ def main() -> None:
         benchmark, metrics, loadings, portfolio, survivors = _run_pipeline(
             as_of_date, threshold, int(universe_size), int(n_factors),
             float(shadow_cutoff), int(target_size), must_go_in,
+            dict(zip(holdings["TICKER"], holdings["ALLOCATION_PCT"])) if not holdings.empty else {},
         )
     except Exception as error:
         st.error(f"Screening failed: {error}")
@@ -375,7 +376,7 @@ def main() -> None:
     st.subheader(f"Portfolio allocation as of {as_of_date}")
     st.dataframe(
         portfolio[
-            ["Weight (%)", "In_Shadow_List", "Dominant_Factor", "Downside_Beta",
+            ["Weight (%)", "Taxable_Holding", "In_Shadow_List", "Dominant_Factor", "Downside_Beta",
              "Max_Factor_Loading", "Sector", "T12M_Return"]
         ].style.format(
             {
@@ -385,6 +386,17 @@ def main() -> None:
         ),
         use_container_width=True,
     )
+    if not holdings.empty:
+        st.markdown("**Taxable holdings**")
+        st.dataframe(
+            holdings.assign(IN_PORTFOLIO=holdings["TICKER"].isin(portfolio.index)).style.format(
+                {
+                    "ALLOCATION_PCT": "{:.2f}%", "GAIN_PCT": "{:.2f}%",
+                    "WEIGHTED_GAIN": "{:.2%}", "TAX_DRAG": "{:.2%}",
+                }
+            ),
+            use_container_width=True,
+        )
     st.metric("Portfolio average trailing return", f"{portfolio['T12M_Return'].mean():.2%}")
     st.download_button(
         "Download portfolio CSV", data=portfolio.to_csv().encode("utf-8"),
@@ -392,6 +404,25 @@ def main() -> None:
     )
     st.subheader("Varimax factor loadings")
     st.dataframe(loadings.style.background_gradient(cmap="Blues"), use_container_width=True)
+    if not holdings.empty:
+        st.markdown("**Taxable holdings factor analysis**")
+        held = holdings["TICKER"].tolist()
+        held_loadings = loadings.reindex(held).dropna(how="all")
+        if held_loadings.empty:
+            st.caption("None of your taxable holdings survived the screen, so no factor loadings are available.")
+        else:
+            held_view = held_loadings.join(
+                metrics.reindex(held_loadings.index)[["Dominant_Factor", "Max_Factor_Loading"]]
+            )
+            st.dataframe(
+                held_view.style.format({"Max_Factor_Loading": "{:.3f}"}).background_gradient(
+                    cmap="Blues", subset=list(held_loadings.columns)
+                ),
+                use_container_width=True,
+            )
+            missing = [t for t in held if t not in held_loadings.index]
+            if missing:
+                st.caption(f"Not in factor analysis (screened out): {', '.join(missing)}")
     st.subheader("Surviving stocks, ranked by market cap")
     st.dataframe(
         survivors.style.format(
