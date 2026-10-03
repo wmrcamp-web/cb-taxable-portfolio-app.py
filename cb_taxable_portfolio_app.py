@@ -238,6 +238,8 @@ def _run_pipeline(
 
 def _parse_holdings(csv_text: str) -> tuple[pd.DataFrame, list[str]]:
     required = ["TICKER", "ALLOCATION_PCT", "GAIN_PCT", "TERM"]
+    if not csv_text.strip():
+        return pd.DataFrame(columns=required), []
     holdings = pd.read_csv(io.StringIO(csv_text))
     holdings.columns = [str(column).strip().upper() for column in holdings.columns]
     if not set(required).issubset(holdings.columns):
@@ -296,11 +298,21 @@ def main() -> None:
     )
     target_size = sidebar.number_input("Target portfolio size", min_value=10, max_value=30, value=16)
     sidebar.markdown("#### Taxable holdings")
+    sidebar.caption(
+        "One holding per line: ticker, % of portfolio, unrealized gain %, "
+        "and LT (long-term) or ST (short-term). Up to 50 rows."
+    )
     holdings_csv = sidebar.text_area(
-        "Ticker, allocation (%), gain (%), term (LT/ST)",
-        value="TICKER,ALLOCATION_PCT,GAIN_PCT,TERM",
-        height=150,
-        help="Example row: AAPL,15,25,LT. At most 50 rows are used.",
+        "Holdings (CSV)",
+        value="",
+        placeholder=(
+            "TICKER,ALLOCATION_PCT,GAIN_PCT,TERM\n"
+            "AAPL,15,25,LT\n"
+            "MSFT,10,40,LT\n"
+            "NVDA,5,12,ST"
+        ),
+        height=170,
+        help="Paste or type CSV with a header row. Leave blank to skip taxable holdings.",
     )
     try:
         holdings, must_go_in = _parse_holdings(holdings_csv)
