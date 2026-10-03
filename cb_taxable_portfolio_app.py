@@ -315,15 +315,9 @@ def main() -> None:
     )
     holdings_csv = sidebar.text_area(
         "Holdings (CSV)",
-        value="",
-        placeholder=(
-            "TICKER,ALLOCATION_PCT,GAIN_PCT,TERM\n"
-            "AAPL,15,25,LT\n"
-            "MSFT,10,40,LT\n"
-            "NVDA,5,12,ST"
-        ),
+        value="TICKER,ALLOCATION_PCT,GAIN_PCT,TERM\nAAPL,15,25,LT",
         height=170,
-        help="Paste or type CSV with a header row. Leave blank to skip taxable holdings.",
+        help="Keep the header row. Replace the AAPL example with your holdings, or clear the box to skip taxable holdings.",
     )
     try:
         holdings, must_go_in = _parse_holdings(holdings_csv)
