@@ -70,7 +70,7 @@ multitasking==0.0.13
     # via yfinance
 narwhals==2.26.0
     # via altair
-numpy==2.5.3
+numpy==2.4.6
     # via
     #   cb-taxable-portfolio-app (pyproject.toml)
     #   contourpy
@@ -87,7 +87,7 @@ packaging==26.3
     #   altair
     #   matplotlib
     #   streamlit
-pandas==2.3.3
+pandas==3.0.6
     # via
     #   cb-taxable-portfolio-app (pyproject.toml)
     #   factor-analyzer
@@ -136,7 +136,7 @@ rpds-py==2026.6.3
     # via
     #   jsonschema
     #   referencing
-scikit-learn==1.5.2
+scikit-learn==1.9.1
     # via
     #   cb-taxable-portfolio-app (pyproject.toml)
     #   factor-analyzer
@@ -170,7 +170,7 @@ uvicorn==0.54.0
     # via streamlit
 watchdog==6.0.0
     # via streamlit
-websockets==16.1.1
+websockets==17.1
     # via
     #   streamlit
     #   yfinance
