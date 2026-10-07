@@ -16,11 +16,20 @@ from factor_analyzer import FactorAnalyzer
 LT_TAX_RATE = 0.239
 ST_TAX_RATE = 0.40
 BENCHMARK = "^GSPC"
+DEFAULT_HOLDINGS_CSV = "TICKER,ALLOCATION_PCT,GAIN_PCT,TERM\nAAPL,15,25,LT"
 BANNED_TICKERS = {
     "XLE", "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "PSX", "VLO",
     "GLD", "IAU", "NEM", "GOLD", "AEM",
     "BITO", "IBIT", "GBTC", "MSTR", "COIN", "GOOG",
 }
+
+
+def _get_holdings_csv_default() -> str:
+    try:
+        configured = st.secrets.get("HOLDINGS_CSV")
+    except FileNotFoundError:
+        configured = None
+    return configured if isinstance(configured, str) and configured.strip() else DEFAULT_HOLDINGS_CSV
 
 
 def _download_close(tickers: list[str], start: dt.date, end: dt.date) -> pd.DataFrame:
@@ -344,9 +353,9 @@ def main() -> None:
     )
     holdings_csv = sidebar.text_area(
         "Holdings (CSV)",
-        value="TICKER,ALLOCATION_PCT,GAIN_PCT,TERM\nAAPL,15,25,LT",
+        value=_get_holdings_csv_default(),
         height=170,
-        help="Keep the header row. Replace the AAPL example with your holdings, or clear the box to skip taxable holdings.",
+        help="Keep the header row. Update the preloaded holdings as needed, or clear the box to skip taxable holdings.",
     )
     try:
         holdings, must_go_in = _parse_holdings(holdings_csv)
