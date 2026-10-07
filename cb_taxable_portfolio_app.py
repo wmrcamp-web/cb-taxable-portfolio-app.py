@@ -290,6 +290,16 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] textarea {
+            font-size: 0.75rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.title("CB Taxable Portfolio Engine")
     st.caption("S&P 500 screening, return gates, downside beta, factor diversification, and estimated tax drag.")
     sidebar = st.sidebar
