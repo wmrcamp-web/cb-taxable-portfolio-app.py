@@ -141,10 +141,23 @@ def _run_pipeline(
 
     with st.spinner("Checking S&P 500 market capitalizations..."):
         sorted_tickers, market_caps = get_sorted_by_market_cap(tuple(eligible))
-    tickers = list(dict.fromkeys(required + sorted_tickers[:universe_size] + [BENCHMARK]))
+    no_cap = sorted(t for t in eligible if not market_caps.get(t))
+    if no_cap:
+        st.warning(
+            f"Market cap lookup failed for {len(no_cap)} tickers, so they were ranked last "
+            f"and may be excluded from the universe: {', '.join(no_cap)}"
+        )
+    selected = sorted_tickers if universe_size <= 0 else sorted_tickers[:universe_size]
+    tickers = list(dict.fromkeys(required + selected + [BENCHMARK]))
     with st.spinner("Downloading historical prices..."):
         prices = _download_close(tickers, as_of_date - dt.timedelta(days=730), as_of_date)
     prices = prices.tail(253).dropna(axis=1, how="any")
+    dropped = sorted(set(tickers) - set(prices.columns))
+    if dropped:
+        st.warning(
+            f"{len(dropped)} of {len(tickers)} tickers were dropped for missing or incomplete "
+            f"price history: {', '.join(dropped)}"
+        )
     if BENCHMARK not in prices:
         raise RuntimeError("Yahoo Finance did not return S&P 500 benchmark prices.")
     returns = prices.pct_change(fill_method=None).dropna(how="all")
@@ -338,8 +351,12 @@ def main() -> None:
         ) / 100.0
     else:
         threshold = None
+    full_universe = sidebar.checkbox(
+        "Screen the full S&P 500", value=False, help="Slower: downloads prices for every eligible constituent."
+    )
     universe_size = sidebar.number_input(
-        "Top S&P 500 by market cap", min_value=50, max_value=250, value=150, step=5
+        "Top S&P 500 by market cap", min_value=50, max_value=250, value=150, step=5,
+        disabled=full_universe,
     )
     n_factors = sidebar.number_input("Varimax factors", min_value=3, max_value=12, value=8)
     shadow_cutoff = sidebar.slider(
@@ -385,7 +402,7 @@ def main() -> None:
 
     try:
         benchmark, metrics, loadings, portfolio, survivors = _run_pipeline(
-            as_of_date, threshold, int(universe_size), int(n_factors),
+            as_of_date, threshold, 0 if full_universe else int(universe_size), int(n_factors),
             float(shadow_cutoff), int(target_size), must_go_in,
             dict(zip(holdings["TICKER"], holdings["ALLOCATION_PCT"])) if not holdings.empty else {},
         )

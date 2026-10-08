@@ -1,0 +1,22 @@
+definition_version: 2
+
+entities:
+  cb_taxable_portfolio:
+    type: streamlit
+    identifier:
+      name: CB_TAXABLE_PORTFOLIO
+      database: USER$
+      schema: PUBLIC
+    title: CB Taxable Portfolio
+    main_file: streamlit_app.py
+    query_warehouse: COMPUTE_WH
+    runtime_name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    external_access_integrations:
+      - REPLACE_WITH_EXTERNAL_ACCESS_INTEGRATION
+    artifacts:
+      - pyproject.toml
+      - uv.lock
+      - streamlit_app.py
+      - cb_taxable_portfolio_app.py
+      - snowflake.yml
