@@ -181,7 +181,7 @@ def _run_pipeline(
     factor_count = min(n_factors, len(survivors), returns_matrix.shape[0] - 1)
     if factor_count < 2:
         raise RuntimeError("At least two qualifying stocks are needed for factor analysis.")
-    with st.spinner(f"Running {factor_count}-factor Varimax analysis..."):
+    with st.spinner(f"Running {factor_count}-factor analysis..."):
         analyzer = FactorAnalyzer(n_factors=factor_count, rotation="varimax", method="minres")
         analyzer.fit(returns_matrix)
         loadings = pd.DataFrame(
@@ -334,6 +334,16 @@ def main() -> None:
     )
     st.caption("S&P 500 screening, return gates, downside beta, factor diversification, and estimated tax drag.")
     sidebar = st.sidebar
+    sidebar.markdown(
+        """
+        <div style="font-size: 1.3rem; font-weight: 700; margin-bottom: 1rem;">
+            <a href="https://github.com/wmrcamp-web/cb-taxable-portfolio-app.py#how-it-works" target="_blank" style="text-decoration: none; color: #0066cc;">
+                How it Works
+            </a>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     sidebar.header("Protocol configuration")
     as_of_date = sidebar.date_input("As-of date", value=dt.date.today())
     try:
