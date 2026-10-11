@@ -322,32 +322,32 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    
-    # Initialize session state
+
     if "show_how_it_works" not in st.session_state:
         st.session_state.show_how_it_works = False
 
     st.title("CB Taxable Portfolio Engine")
     st.markdown(
         """
-        <div style="font-size: 1.5rem; font-weight: 700; line-height: 1.3;">
-            FOR RESEARCH PURPOSES ONLY.<br>
-            THIS IS NOT INVESTMENT ADVICE.
+        <div style="border: 2px solid #b00020; border-radius: 10px; padding: 14px 16px; background: rgba(176,0,32,0.05); color: #b00020; font-weight: 700; line-height: 1.5; margin-top: 0.25rem; margin-bottom: 0.75rem;">
+            <strong>IMPORTANT: RESEARCH TOOL ONLY — NOT INVESTMENT ADVICE.</strong><br>
+            Provided for educational and research purposes only; not a recommendation or solicitation to buy, sell, or hold any security.<br>
+            Investing involves risk, including possible loss of principal; past performance does not guarantee future results.<br>
+            Content was developed with AI assistance and may contain errors — verify before relying on it, and consult a qualified financial professional before investing.
         </div>
         """,
         unsafe_allow_html=True,
     )
     st.caption("S&P 500 screening, return gates, downside beta, factor diversification, and estimated tax drag.")
     sidebar = st.sidebar
-    
-    # Show "How It Works" if button was clicked
+
     if st.session_state.show_how_it_works:
         col1, col2 = sidebar.columns(2)
         if col1.button("📘 How It Works", use_container_width=True, key="how_it_works_btn"):
             st.session_state.show_how_it_works = True
         if col2.button("🏠 APP", use_container_width=True, key="back_to_app_btn"):
             st.session_state.show_how_it_works = False
-        
+
         st.markdown("---")
         st.markdown("""
 ## How It Works
@@ -373,13 +373,15 @@ Existing taxable holdings are preserved at their current weights, with estimated
 The result is a diversified portfolio balanced across return quality, systematic risk concentration, downside resilience, and tax efficiency.
         """)
         return
-    
-    # Normal app flow
+
     col1, col2 = sidebar.columns(2)
     if col1.button("📘 How It Works", use_container_width=True, key="how_it_works_btn"):
         st.session_state.show_how_it_works = True
         st.rerun()
-    
+    if col2.button("🏠 APP", use_container_width=True, key="back_to_app_btn"):
+        st.session_state.show_how_it_works = False
+        st.rerun()
+
     sidebar.header("Protocol configuration")
     as_of_date = sidebar.date_input("As-of date", value=dt.date.today())
     try:
