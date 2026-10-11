@@ -334,16 +334,9 @@ def main() -> None:
     )
     st.caption("S&P 500 screening, return gates, downside beta, factor diversification, and estimated tax drag.")
     sidebar = st.sidebar
-    sidebar.markdown(
-        """
-        <div style="font-size: 1.3rem; font-weight: 700; margin-bottom: 1rem;">
-            <a href="https://github.com/wmrcamp-web/cb-taxable-portfolio-app.py#how-it-works" target="_blank" style="text-decoration: none; color: #0066cc;">
-                How it Works
-            </a>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if sidebar.button("📘 How It Works", use_container_width=True, key="how_it_works_btn"):
+        st.session_state.show_how_it_works = True
+    
     sidebar.header("Protocol configuration")
     as_of_date = sidebar.date_input("As-of date", value=dt.date.today())
     try:
@@ -405,7 +398,37 @@ def main() -> None:
         "Tax drag is an estimate using fixed 23.9% long-term and 40% short-term rates. "
         "It excludes state taxes and individual circumstances; it is not tax advice."
     )
-    run = sidebar.button("Run protocol screen", type="primary") or st.button("Run protocol", type="primary")
+
+    # Show "How It Works" if button was clicked
+    if st.session_state.get("show_how_it_works", False):
+        st.markdown("---")
+        st.markdown("""
+## How It Works
+
+The CB Taxable Portfolio Engine applies a multi-objective optimization framework to construct diversified, tax-aware equity portfolios from S&P 500 constituents.
+
+**Universe Selection & Return Gating**
+
+The screening process begins by fetching real-time data for all S&P 500 stocks, ranked by market capitalization to prioritize liquidity and stability. It excludes energy, gold, cryptocurrencies, and other thematic sectors that do not fit a traditional equity mandate. A configurable return gate filters for stocks with acceptable recent performance—typically benchmarked against the S&P 500 trailing return—creating a quality-controlled candidate pool.
+
+**Factor-Based Diversification**
+
+From the screened universe, the engine downloads two years of historical price data and performs factor analysis to identify the main sources of return covariation across stocks. This reveals when multiple securities are driven by the same underlying risk factors. To prevent concentration, the model enforces a hard constraint: no more than three holdings per dominant factor. This structural diversification approach improves resilience beyond simple sector weighting.
+
+**Downside Risk & Defensive Positioning**
+
+The engine calculates downside beta for each stock—measuring sensitivity during market downturns rather than over full market cycles. Stocks with weak factor exposure and lower downside beta are treated as "shadow list" candidates, prioritizing defensive names that weather corrections more gracefully.
+
+**Tax-Aware Allocation**
+
+Existing taxable holdings are preserved at their current weights, with estimated tax drag calculated from allocation, unrealized gains, and applicable tax rates (23.9% long-term, 40% short-term). This ensures the optimization reflects real-world constraints: minimizing unnecessary capital gains realization is as important as maximizing raw return.
+
+The result is a diversified portfolio balanced across return quality, systematic risk concentration, downside resilience, and tax efficiency.
+        """)
+        st.session_state.show_how_it_works = False
+        return
+
+    run = st.button("Run protocol", type="primary")
     if not run:
         st.info("Set the screening parameters, then run the protocol to calculate a portfolio.")
         return
