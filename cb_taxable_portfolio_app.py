@@ -23,6 +23,37 @@ BANNED_TICKERS = {
     "BITO", "IBIT", "GBTC", "MSTR", "COIN", "GOOG",
 }
 
+HOW_IT_WORKS_MD = """
+## How It Works
+
+The CB Taxable Portfolio Engine applies a multi-objective optimization framework to construct diversified, tax-aware equity portfolios from S&P 500 constituents.
+
+**Universe Selection & Return Gating**
+
+The screening process begins by fetching real-time data for all S&P 500 stocks, ranked by market capitalization to prioritize liquidity and stability. It excludes energy, gold, cryptocurrencies, and other thematic sectors that do not fit a traditional equity mandate. A configurable return gate filters for stocks with acceptable recent performance—typically benchmarked against the S&P 500 trailing return—creating a quality-controlled candidate pool.
+
+**Factor-Based Diversification**
+
+From the screened universe, the engine downloads two years of historical price data and performs factor analysis to identify the main sources of return covariation across stocks. This reveals when multiple securities are driven by the same underlying risk factors. To prevent concentration, the model enforces a hard constraint: no more than three holdings per dominant factor. This structural diversification approach improves resilience beyond simple sector weighting.
+
+**Downside Risk & Defensive Positioning**
+
+The engine calculates downside beta for each stock—measuring sensitivity during market downturns rather than over full market cycles. Stocks with weak factor exposure and lower downside beta are treated as "shadow list" candidates, prioritizing defensive names that weather corrections more gracefully.
+
+**Tax-Aware Allocation**
+
+Existing taxable holdings are preserved at their current weights, with estimated tax drag calculated from allocation, unrealized gains, and applicable tax rates (23.9% long-term, 40% short-term). This ensures the optimization reflects real-world constraints: minimizing unnecessary capital gains realization is as important as maximizing raw return.
+
+The result is a diversified portfolio balanced across return quality, systematic risk concentration, downside resilience, and tax efficiency.
+"""
+
+HOW_IT_WORKS_DISCLAIMER_HTML = """
+<div style="border: 2px solid #b00020; border-radius: 10px; padding: 14px 16px; background: rgba(176,0,32,0.05); color: #b00020; font-weight: 700; line-height: 1.5; margin-top: 1.5rem;">
+<p>IMPORTANT: RESEARCH TOOL ONLY—NOT INVESTMENT ADVICE. THE CB TAX-EXEMPT PROTOCOL, ITS ANALYSIS, PORTFOLIO RESULTS, AND RELATED MATERIALS ARE PROVIDED FOR EDUCATIONAL AND RESEARCH PURPOSES ONLY. THEY ARE NOT INVESTMENT, FINANCIAL, TAX, OR LEGAL ADVICE, AND ARE NOT A RECOMMENDATION OR SOLICITATION TO BUY, SELL, OR HOLD ANY SECURITY. INVESTING INVOLVES RISK, INCLUDING THE POSSIBLE LOSS OF PRINCIPAL. PAST PERFORMANCE DOES NOT GUARANTEE FUTURE RESULTS. CONSULT A QUALIFIED FINANCIAL PROFESSIONAL WHO UNDERSTANDS YOUR CIRCUMSTANCES BEFORE MAKING ANY INVESTMENT DECISION.</p>
+<p style="margin-bottom: 0;">AI-GENERATED CONTENT AND LIMITATIONS. THE APP AND ITS CODE WERE DEVELOPED WITH THE ASSISTANCE OF ARTIFICIAL INTELLIGENCE AND PROVIDED IN GOOD FAITH. THEY MAY CONTAIN ERRORS, OMISSIONS, INACCURATE OR FABRICATED (“HALLUCINATED”) INFORMATION, OR OTHER DEFECTS. DATA, CALCULATIONS, AND RESULTS MAY BE INCOMPLETE OR INCORRECT AND HAVE NOT BEEN INDEPENDENTLY VERIFIED. REVIEW AND VERIFY INFORMATION BEFORE RELYING ON IT FOR ANY PURPOSE.</p>
+</div>
+"""
+
 
 def _get_holdings_csv_default() -> str:
     try:
@@ -306,6 +337,14 @@ def _parse_holdings(csv_text: str) -> tuple[pd.DataFrame, list[str]]:
     return holdings, holdings["TICKER"].tolist()
 
 
+def _show_how_it_works() -> None:
+    st.session_state.show_how_it_works = True
+
+
+def _show_app() -> None:
+    st.session_state.show_how_it_works = False
+
+
 def main() -> None:
     st.set_page_config(
         page_title="CB Taxable Portfolio Dashboard",
@@ -317,6 +356,10 @@ def main() -> None:
         <style>
         [data-testid="stSidebar"] textarea {
             font-size: 0.75rem;
+        }
+        [data-testid="stSidebar"] div.stButton > button p {
+            font-size: 1.15rem;
+            font-weight: 800;
         }
         </style>
         """,
@@ -341,50 +384,16 @@ def main() -> None:
     st.caption("S&P 500 screening, return gates, downside beta, factor diversification, and estimated tax drag.")
     sidebar = st.sidebar
 
+    # Navigation buttons: callbacks update state before the rerun, so one click always works.
+    nav1, nav2 = sidebar.columns(2)
+    nav1.button("📘 How It Works", use_container_width=True, key="how_it_works_btn", on_click=_show_how_it_works)
+    nav2.button("🏠 APP", use_container_width=True, key="back_to_app_btn", on_click=_show_app)
+
     if st.session_state.show_how_it_works:
-        col1, col2 = sidebar.columns(2)
-        if col1.button("📘 How It Works", use_container_width=True, key="how_it_works_btn"):
-            st.session_state.show_how_it_works = True
-        if col2.button("🏠 APP", use_container_width=True, key="back_to_app_btn"):
-            st.session_state.show_how_it_works = False
-
         st.markdown("---")
-        st.markdown("""
-## How It Works
-
-The CB Taxable Portfolio Engine applies a multi-objective optimization framework to construct diversified, tax-aware equity portfolios from S&P 500 constituents.
-
-**Universe Selection & Return Gating**
-
-The screening process begins by fetching real-time data for all S&P 500 stocks, ranked by market capitalization to prioritize liquidity and stability. It excludes energy, gold, cryptocurrencies, and other thematic sectors that do not fit a traditional equity mandate. A configurable return gate filters for stocks with acceptable recent performance—typically benchmarked against the S&P 500 trailing return—creating a quality-controlled candidate pool.
-
-**Factor-Based Diversification**
-
-From the screened universe, the engine downloads two years of historical price data and performs factor analysis to identify the main sources of return covariation across stocks. This reveals when multiple securities are driven by the same underlying risk factors. To prevent concentration, the model enforces a hard constraint: no more than three holdings per dominant factor. This structural diversification approach improves resilience beyond simple sector weighting.
-
-**Downside Risk & Defensive Positioning**
-
-The engine calculates downside beta for each stock—measuring sensitivity during market downturns rather than over full market cycles. Stocks with weak factor exposure and lower downside beta are treated as "shadow list" candidates, prioritizing defensive names that weather corrections more gracefully.
-
-**Tax-Aware Allocation**
-
-Existing taxable holdings are preserved at their current weights, with estimated tax drag calculated from allocation, unrealized gains, and applicable tax rates (23.9% long-term, 40% short-term). This ensures the optimization reflects real-world constraints: minimizing unnecessary capital gains realization is as important as maximizing raw return.
-
-The result is a diversified portfolio balanced across return quality, systematic risk concentration, downside resilience, and tax efficiency.
-
-**IMPORTANT: RESEARCH TOOL ONLY—NOT INVESTMENT ADVICE. THE CB TAX-EXEMPT PROTOCOL, ITS ANALYSIS, PORTFOLIO RESULTS, AND RELATED MATERIALS ARE PROVIDED FOR EDUCATIONAL AND RESEARCH PURPOSES ONLY. THEY ARE NOT INVESTMENT, FINANCIAL, TAX, OR LEGAL ADVICE, AND ARE NOT A RECOMMENDATION OR SOLICITATION TO BUY, SELL, OR HOLD ANY SECURITY. INVESTING INVOLVES RISK, INCLUDING THE POSSIBLE LOSS OF PRINCIPAL. PAST PERFORMANCE DOES NOT GUARANTEE FUTURE RESULTS. CONSULT A QUALIFIED FINANCIAL PROFESSIONAL WHO UNDERSTANDS YOUR CIRCUMSTANCES BEFORE MAKING ANY INVESTMENT DECISION.**
-
-**AI-GENERATED CONTENT AND LIMITATIONS. THE APP AND ITS CODE WERE DEVELOPED WITH THE ASSISTANCE OF ARTIFICIAL INTELLIGENCE AND PROVIDED IN GOOD FAITH. THEY MAY CONTAIN ERRORS, OMISSIONS, INACCURATE OR FABRICATED (“HALLUCINATED”) INFORMATION, OR OTHER DEFECTS. DATA, CALCULATIONS, AND RESULTS MAY BE INCOMPLETE OR INCORRECT AND HAVE NOT BEEN INDEPENDENTLY VERIFIED. REVIEW AND VERIFY INFORMATION BEFORE RELYING ON IT FOR ANY PURPOSE.**
-        """)
+        st.markdown(HOW_IT_WORKS_MD)
+        st.markdown(HOW_IT_WORKS_DISCLAIMER_HTML, unsafe_allow_html=True)
         return
-
-    col1, col2 = sidebar.columns(2)
-    if col1.button("📘 How It Works", use_container_width=True, key="how_it_works_btn"):
-        st.session_state.show_how_it_works = True
-        st.rerun()
-    if col2.button("🏠 APP", use_container_width=True, key="back_to_app_btn"):
-        st.session_state.show_how_it_works = False
-        st.rerun()
 
     sidebar.header("Protocol configuration")
     as_of_date = sidebar.date_input("As-of date", value=dt.date.today())
