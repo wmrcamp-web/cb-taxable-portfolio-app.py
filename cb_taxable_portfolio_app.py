@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -15,7 +16,13 @@ from factor_analyzer import FactorAnalyzer
 
 LT_TAX_RATE = 0.239
 ST_TAX_RATE = 0.40
-BENCHMARK = "^GSPC"
+BENCHMARK = "SPY"
+BENCHMARK_GATE = "spy_t12m"
+T12M_WEEKLY_CLOSES = 53
+DOWNSIDE_BETA_WEEKS = 104
+PRICE_HISTORY_DAYS = (DOWNSIDE_BETA_WEEKS + 2) * 7
+NON_SHADOW_MIN_LOADING = 0.59
+logger = logging.getLogger(__name__)
 DEFAULT_HOLDINGS_CSV = "TICKER,ALLOCATION_PCT,GAIN_PCT,TERM\nAAPL,15,25,LT"
 BANNED_TICKERS = {
     "XLE", "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "PSX", "VLO",
@@ -30,19 +37,19 @@ The CB Taxable Portfolio Engine applies a multi-objective optimization framework
 
 **Universe Selection & Return Gating**
 
-The screening process begins by fetching real-time data for all S&P 500 stocks, ranked by market capitalization to prioritize liquidity and stability. It excludes energy, gold, cryptocurrencies, and other thematic sectors that do not fit a traditional equity mandate. A configurable return gate filters for stocks with acceptable recent performance—typically benchmarked against the S&P 500 trailing return—creating a quality-controlled candidate pool.
+The screening process begins with the current S&P 500 list and market caps, even for an earlier as-of date. It excludes Energy-sector companies and specified oil, gold, cryptocurrency, and duplicate-share tickers. Missing or invalid market caps are assigned zero, warned about, and ranked last; if all are unavailable, constituent order determines the universe. The default return gate compares stocks with SPY over the same 52 weekly returns (53 weekly closes). You can choose a custom threshold or turn the gate off. Missing SPY data stops the run, rather than silently substituting a zero threshold.
 
 **Factor-Based Diversification**
 
-From the screened universe, the engine downloads two years of historical price data and performs factor analysis to identify the main sources of return covariation across stocks. This reveals when multiple securities are driven by the same underlying risk factors. To prevent concentration, the model enforces a hard constraint: no more than three holdings per dominant factor. This structural diversification approach improves resilience beyond simple sector weighting.
+The engine downloads weekly prices and performs factor analysis on the last 52 weekly returns using Varimax rotation. Non-shadow candidates require an absolute loading of at least 0.59 on the factor being filled and are prioritized by highest trailing return, then loading, downside beta, and ticker to break ties. New selections respect a limit of three holdings per dominant factor; retained holdings count toward that limit but are not sold automatically if they already exceed it.
 
 **Downside Risk & Defensive Positioning**
 
-The engine calculates downside beta for each stock—measuring sensitivity during market downturns rather than over full market cycles. Stocks with weak factor exposure and lower downside beta are treated as "shadow list" candidates, prioritizing defensive names that weather corrections more gracefully.
+The engine calculates downside beta against SPY using up to 104 weekly returns, requiring at least 12 paired weeks when SPY fell. Stocks below the configured shadow-list loading cutoff receive first priority, ordered by lowest downside beta. Missing historical data may make a stock ineligible; historical risk measures are not predictions.
 
 **Tax-Aware Allocation**
 
-Existing taxable holdings are preserved at their current weights, with estimated tax drag calculated from allocation, unrealized gains, and applicable tax rates (23.9% long-term, 40% short-term). This ensures the optimization reflects real-world constraints: minimizing unnecessary capital gains realization is as important as maximizing raw return.
+Existing taxable holdings retain their current weights and bypass the return gate. They count toward the target size; new picks split the remaining allocation equally. Estimated tax drag is displayed using allocation, unrealized gains, and fixed tax rates (23.9% long-term, 40% short-term); it is not used to optimize stock selection or recommend sales.
 
 The result is a diversified portfolio balanced across return quality, systematic risk concentration, downside resilience, and tax efficiency.
 """
@@ -67,8 +74,8 @@ def _download_close(tickers: list[str], start: dt.date, end: dt.date) -> pd.Data
     downloaded = yf.download(
         tickers=tickers,
         start=start,
-        end=end + dt.timedelta(days=1),
-        interval="1d",
+        end=end,
+        interval="1wk",
         auto_adjust=True,
         progress=False,
         threads=True,
@@ -90,11 +97,16 @@ def _download_close(tickers: list[str], start: dt.date, end: dt.date) -> pd.Data
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_benchmark_return(as_of_date: dt.date) -> float:
-    prices = _download_close([BENCHMARK], as_of_date - dt.timedelta(days=400), as_of_date)
-    values = prices[BENCHMARK].dropna()
+    prices = _download_close(
+        [BENCHMARK], as_of_date - dt.timedelta(days=PRICE_HISTORY_DAYS), as_of_date
+    )
+    values = prices[BENCHMARK].ffill().iloc[-T12M_WEEKLY_CLOSES:].dropna()
     if len(values) < 2:
         raise RuntimeError("Not enough S&P 500 price history for the selected date.")
-    return float(values.iloc[-1] / values.iloc[0] - 1.0)
+    result = float(values.iloc[-1] / values.iloc[0] - 1.0)
+    if not np.isfinite(result):
+        raise RuntimeError("SPY trailing return is not finite.")
+    return result
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -113,12 +125,27 @@ def fetch_sp500_tickers() -> pd.DataFrame:
     raise RuntimeError("Could not find the S&P 500 constituent table on Wikipedia.")
 
 
+def _positive_market_cap(value: object) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        cap = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return cap if np.isfinite(cap) and cap > 0 else 0.0
+
+
 def _get_market_cap(ticker: str) -> tuple[str, float]:
     try:
         fast_info: Any = yf.Ticker(ticker).fast_info
         market_cap = fast_info.get("market_cap") or fast_info.get("marketCap") or 0
-        return ticker, float(market_cap)
-    except Exception:
+        cap = _positive_market_cap(market_cap)
+        if not cap:
+            logger.warning("Market cap unavailable for %s; assigned zero and ranked last", ticker)
+        return ticker, cap
+    except Exception as error:
+        logger.warning("Market cap unavailable for %s (%s); assigned zero and ranked last",
+                       ticker, type(error).__name__)
         return ticker, 0.0
 
 
@@ -141,7 +168,7 @@ def calculate_downside_beta(asset_returns: pd.Series, benchmark_returns: pd.Seri
     ).replace([np.inf, -np.inf], np.nan).dropna()
     downside = aligned.loc[aligned["benchmark"] < 0]
     variance = downside["benchmark"].var(ddof=1)
-    if len(downside) < 2 or not np.isfinite(variance) or variance == 0:
+    if len(downside) < 12 or not np.isfinite(variance) or variance == 0:
         return float("nan")
     return float(downside["asset"].cov(downside["benchmark"]) / variance)
 
@@ -150,13 +177,17 @@ def validate_returns_matrix(returns: pd.DataFrame) -> pd.DataFrame:
     clean = returns.replace([np.inf, -np.inf], np.nan).dropna(axis=0, how="any")
     clean = clean.loc[:, clean.nunique(dropna=True) > 1]
     if clean.empty or clean.shape[0] < 3 or clean.shape[1] < 2:
-        raise ValueError("At least two non-constant tickers and three complete return days are required.")
-    return clean
+        raise ValueError("At least two non-constant tickers and three complete return weeks are required.")
+    # Match the tax-exempt engine's column-major input to avoid numerical solver drift.
+    return pd.DataFrame(
+        np.asfortranarray(clean.to_numpy(dtype=float)),
+        index=clean.index, columns=clean.columns, copy=False,
+    )
 
 
 def _run_pipeline(
     as_of_date: dt.date,
-    gate_threshold: float | None,
+    gate_threshold: float | str | None,
     universe_size: int,
     n_factors: int,
     shadow_cutoff: float,
@@ -164,6 +195,11 @@ def _run_pipeline(
     must_go_in: list[str],
     held_weights: dict[str, float],
 ) -> tuple[float, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if isinstance(gate_threshold, str):
+        if gate_threshold != BENCHMARK_GATE:
+            raise ValueError(f"Unknown performance gate {gate_threshold!r}")
+    elif gate_threshold is not None and not np.isfinite(gate_threshold):
+        raise ValueError("Performance gate threshold must be finite.")
     constituents = fetch_sp500_tickers()
     constituents = constituents.loc[constituents["GICS Sector"] != "Energy"].copy()
     sector_by_ticker = dict(zip(constituents["Symbol"], constituents["GICS Sector"]))
@@ -171,25 +207,30 @@ def _run_pipeline(
     required = list(dict.fromkeys(must_go_in))
 
     with st.spinner("Checking S&P 500 market capitalizations..."):
-        sorted_tickers, market_caps = get_sorted_by_market_cap(tuple(eligible))
+        _, fetched_caps = get_sorted_by_market_cap(tuple(eligible))
+    market_caps = {t: _positive_market_cap(fetched_caps.get(t)) for t in eligible}
+    sorted_tickers = sorted(eligible, key=lambda ticker: market_caps[ticker], reverse=True)
     no_cap = sorted(t for t in eligible if not market_caps.get(t))
     if no_cap:
         st.warning(
-            f"Market cap lookup failed for {len(no_cap)} tickers, so they were ranked last "
-            f"and may be excluded from the universe: {', '.join(no_cap)}"
+            f"Market caps unavailable for {len(no_cap)} tickers; assigned zero and ranked last: "
+            f"{', '.join(no_cap)}. Market-cap ranking may be incomplete; "
+            "if all caps are unavailable, constituent order determines the universe."
         )
     selected = sorted_tickers if universe_size <= 0 else sorted_tickers[:universe_size]
     tickers = list(dict.fromkeys(required + selected + [BENCHMARK]))
     with st.spinner("Downloading historical prices..."):
-        prices = _download_close(tickers, as_of_date - dt.timedelta(days=730), as_of_date)
-    prices = prices.tail(253).dropna(axis=1, how="any")
+        history = _download_close(
+            tickers, as_of_date - dt.timedelta(days=PRICE_HISTORY_DAYS), as_of_date
+        ).ffill()
+    prices = history.iloc[-T12M_WEEKLY_CLOSES:].dropna(axis=1, how="any")
     dropped = sorted(set(tickers) - set(prices.columns))
     if dropped:
         st.warning(
             f"{len(dropped)} of {len(tickers)} tickers were dropped for missing or incomplete "
             f"price history: {', '.join(dropped)}"
         )
-    if BENCHMARK not in prices:
+    if BENCHMARK not in prices or len(prices) < 2:
         raise RuntimeError("Yahoo Finance did not return S&P 500 benchmark prices.")
     returns = prices.pct_change(fill_method=None).dropna(how="all")
     if returns.empty:
@@ -197,7 +238,14 @@ def _run_pipeline(
 
     total_returns = prices.iloc[-1].div(prices.iloc[0]).sub(1.0)
     benchmark_return = float(total_returns[BENCHMARK])
-    benchmark_daily = returns[BENCHMARK]
+    if not np.isfinite(benchmark_return):
+        raise RuntimeError("SPY trailing return is not finite.")
+    if gate_threshold == BENCHMARK_GATE:
+        gate_threshold = benchmark_return
+    downside_returns = history.iloc[-(DOWNSIDE_BETA_WEEKS + 1):].pct_change(
+        fill_method=None
+    ).dropna(how="all")
+    benchmark_weekly = downside_returns[BENCHMARK]
     stock_tickers = [ticker for ticker in prices.columns if ticker != BENCHMARK]
     survivors = [
         ticker for ticker in stock_tickers
@@ -228,7 +276,8 @@ def _run_pipeline(
     metrics["T12M_Return"] = total_returns.reindex(survivors)
     metrics["Market_Cap"] = pd.Series(market_caps).reindex(survivors).fillna(0.0)
     metrics["Downside_Beta"] = {
-        ticker: calculate_downside_beta(returns[ticker], benchmark_daily) for ticker in survivors
+        ticker: calculate_downside_beta(downside_returns[ticker], benchmark_weekly)
+        for ticker in survivors
     }
     metrics["Max_Factor_Loading"] = max_loading
     metrics["Dominant_Factor"] = dominant
@@ -270,19 +319,24 @@ def _run_pipeline(
     for ticker in shadow:
         add_candidate(ticker)
     absolute_loadings = loadings.abs()
+    non_shadow = metrics.loc[~metrics.index.isin(shadow)]
+    ranked_non_shadow = non_shadow.assign(_selection_ticker=non_shadow.index).sort_values(
+        by=["T12M_Return", "Max_Factor_Loading", "Downside_Beta", "_selection_ticker"],
+        ascending=[False, False, True, True], na_position="last",
+    )
     for factor in loadings.columns:
         if len(chosen) >= limit:
             break
-        for ticker in absolute_loadings[factor].sort_values(ascending=False).index:
-            if absolute_loadings.loc[ticker, factor] >= 0.5:
+        for ticker in ranked_non_shadow.index:
+            if absolute_loadings.loc[ticker, factor] >= NON_SHADOW_MIN_LOADING:
                 before = len(chosen)
                 add_candidate(ticker)
                 if len(chosen) > before:
                     break
     if len(chosen) < limit:
-        remaining = metrics.loc[~metrics.index.isin(chosen)].sort_values("Downside_Beta")
-        for ticker in remaining.index:
-            if ticker in shadow or metrics.loc[ticker, "Max_Factor_Loading"] >= 0.5:
+        for ticker in shadow + ranked_non_shadow.index.tolist():
+            if (ticker in shadow
+                    or absolute_loadings.loc[ticker].ge(NON_SHADOW_MIN_LOADING).any()):
                 add_candidate(ticker)
 
     portfolio = metrics.reindex(list(dict.fromkeys(required + chosen))).copy() if (chosen or required) else pd.DataFrame()
@@ -397,19 +451,18 @@ def main() -> None:
 
     sidebar.header("Protocol configuration")
     as_of_date = sidebar.date_input("As-of date", value=dt.date.today())
-    try:
-        benchmark_default = get_benchmark_return(as_of_date)
-        sidebar.metric("S&P 500 trailing return", f"{benchmark_default:.2%}")
-    except Exception as error:
-        benchmark_default = None
-        sidebar.warning(f"Benchmark data unavailable: {error}")
-
     enforce_gate = sidebar.toggle("Enforce minimum trailing return", value=True)
     if enforce_gate:
-        default_threshold = benchmark_default * 100 if benchmark_default is not None else 0.0
-        threshold = sidebar.number_input(
-            "Minimum trailing return (%)", value=float(default_threshold), step=1.0, format="%.2f"
-        ) / 100.0
+        gate_source = sidebar.radio(
+            "Gate threshold source", ["SPY trailing return (default)", "Custom threshold"]
+        )
+        if gate_source == "SPY trailing return (default)":
+            threshold = BENCHMARK_GATE
+            sidebar.caption("SPY's return over the same 52 weekly returns as each stock.")
+        else:
+            threshold = sidebar.number_input(
+                "Minimum trailing return (%)", value=0.0, step=1.0, format="%.2f"
+            ) / 100.0
     else:
         threshold = None
     full_universe = sidebar.checkbox(
@@ -450,6 +503,7 @@ def main() -> None:
             "- Excludes energy, gold, bitcoin-related tickers, and GOOG\n"
             "- Taxable holdings keep their allocation and count toward the target size; new picks split the remaining % equally\n"
             "- Maximum three holdings per dominant factor\n"
+            "- Non-shadow picks require absolute loading >= 0.59; highest trailing return first\n"
             "- Taxable holdings are prioritized when eligible"
         )
     st.caption(
@@ -473,7 +527,7 @@ def main() -> None:
         return
 
     col_a, col_b, col_c = st.columns(3)
-    col_a.metric("S&P 500 trailing return", f"{benchmark:.2%}")
+    col_a.metric("S&P 500 (SPY) 52-week trailing return", f"{benchmark:.2%}")
     col_b.metric("Screen survivors", len(metrics))
     col_c.metric("Portfolio holdings", len(portfolio))
     if portfolio.empty:

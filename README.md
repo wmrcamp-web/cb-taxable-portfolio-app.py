@@ -1,5 +1,32 @@
 # CB Taxable Portfolio
 
+### CB protocol rules
+
+Both CB apps use SPY, a default gate computed from the same 52 weekly returns
+(53 weekly closes) as each stock, and Varimax factor analysis on that weekly
+return window. Downside beta uses up to 104 weekly returns and requires at least
+12 paired SPY-down weeks. Prices are forward-filled before slicing either window;
+the as-of date is the exclusive download end date.
+
+Shadow-list candidates come first, ordered by downside beta. Other candidates need
+an absolute factor loading of at least 0.59 and are ranked by trailing return
+descending, maximum absolute loading descending, downside beta ascending, then
+ticker ascending. New selections respect the three-per-dominant-factor limit.
+Unavailable or invalid market caps become zero, produce a warning, and rank last;
+ties preserve constituent order, including when every market cap is unavailable.
+Market caps and constituent lists are current, not point-in-time historical data.
+
+Retained taxable holdings bypass the return gate, keep their allocations, and count
+toward the target size and factor limits. Existing holdings exceeding a factor limit
+are not automatically sold. New picks split the remaining allocation. Tax drag is
+a displayed estimate, not a sell/hold optimizer.
+
+Offline regressions (with `pytest` installed alongside the app dependencies):
+
+```
+python -m pytest -q test_protocol_rules.py
+```
+
 ### How to run it on your own machine
 
 Prerequisite: install `uv` if you don't already have it.
