@@ -138,6 +138,87 @@ def test_all_missing_caps_keep_constituent_order(inputs):
     assert any("constituent order" in w for w in inputs["warnings"])
 
 
+def test_market_caps_use_info_retry_and_never_use_fast_info(monkeypatch):
+    outcomes = [TimeoutError("temporary"), {}, {"marketCap": 123.0}]
+    sleeps = []
+
+    class Ticker:
+        @property
+        def info(self):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        @property
+        def fast_info(self):
+            pytest.fail("Must use the tax-exempt app's info.marketCap source")
+
+    monkeypatch.setattr(app.yf, "Ticker", lambda ticker: Ticker())
+    monkeypatch.setattr(app.time, "sleep", sleeps.append)
+    assert app._get_market_cap("AAA") == ("AAA", 123.0)
+    assert not outcomes
+    assert sleeps == [1, 2]
+
+
+@pytest.mark.parametrize("raw", [None, 0, -1, float("nan"), float("inf"), "bad", True])
+def test_market_cap_retries_invalid_values_then_warns(monkeypatch, caplog, raw):
+    calls = []
+    sleeps = []
+
+    class Ticker:
+        @property
+        def info(self):
+            calls.append(True)
+            return {"marketCap": raw}
+
+    monkeypatch.setattr(app.yf, "Ticker", lambda ticker: Ticker())
+    monkeypatch.setattr(app.time, "sleep", sleeps.append)
+    assert app._get_market_cap("BAD") == ("BAD", 0.0)
+    assert len(calls) == 3 and sleeps == [1, 2]
+    assert "BAD" in caplog.text and "assigned zero and ranked last" in caplog.text
+
+
+def test_market_cap_failure_is_logged_without_error_details(monkeypatch, caplog):
+    sleeps = []
+
+    def ticker(_ticker):
+        raise ConnectionError("https://example.test?token=SECRET")
+
+    monkeypatch.setattr(app.yf, "Ticker", ticker)
+    monkeypatch.setattr(app.time, "sleep", sleeps.append)
+    assert app._get_market_cap("BAD") == ("BAD", 0.0)
+    assert sleeps == [1, 2]
+    assert "ConnectionError" in caplog.text and "SECRET" not in caplog.text
+
+
+def test_market_cap_fetch_uses_eight_workers_and_refreshes_cached_zero(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    workers = []
+    caps = {"A": 0.0, "B": 2.0}
+
+    def executor(max_workers):
+        workers.append(max_workers)
+        return ThreadPoolExecutor(max_workers=max_workers)
+
+    monkeypatch.setattr(app, "ThreadPoolExecutor", executor)
+    monkeypatch.setattr(app, "_get_market_cap", lambda ticker: (ticker, caps.get(ticker, 1.0)))
+    tickers = tuple(["A", "B"] + [f"T{i}" for i in range(10)])
+    app.clear_market_data_caches()
+    try:
+        ordered, fetched = app.get_sorted_by_market_cap(tickers)
+        assert workers == [8] and ordered[0] == "B" and ordered[-1] == "A"
+        assert fetched["A"] == 0
+        caps["A"] = 3.0
+        assert app.get_sorted_by_market_cap(tickers)[1]["A"] == 0
+        app.clear_market_data_caches()
+        assert app.get_sorted_by_market_cap(tickers)[0][0] == "A"
+        assert workers == [8, 8]
+    finally:
+        app.clear_market_data_caches()
+
+
 def test_fills_before_slicing_and_keeps_benchmark_failure_explicit(inputs):
     closes = inputs["closes"]
     closes.loc[closes.index[-53], "HIGH_RETURN"] = np.nan
@@ -187,3 +268,12 @@ def test_dashboard_defaults_to_in_run_spy_gate_without_separate_fetch(inputs, mo
     assert not page.exception and not page.error
     assert calls[0][1] == app.BENCHMARK_GATE
     assert any(m.label == "S&P 500 (SPY) 52-week trailing return" for m in page.metric)
+
+
+def test_dashboard_refresh_clears_market_data_caches(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(app, "clear_market_data_caches", lambda: cleared.append(True))
+    page = AppTest.from_string("import cb_taxable_portfolio_app as app\napp.main()").run(timeout=20)
+    next(b for b in page.sidebar.button if b.label == "Refresh market data").click().run(timeout=20)
+    assert not page.exception and cleared == [True]
+    assert any("caches cleared" in message.value for message in page.sidebar.success)

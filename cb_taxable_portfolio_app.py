@@ -3,8 +3,8 @@ from __future__ import annotations
 import datetime as dt
 import io
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,9 @@ T12M_WEEKLY_CLOSES = 53
 DOWNSIDE_BETA_WEEKS = 104
 PRICE_HISTORY_DAYS = (DOWNSIDE_BETA_WEEKS + 2) * 7
 NON_SHADOW_MIN_LOADING = 0.59
+MARKET_CAP_MAX_WORKERS = 8
+MARKET_CAP_ATTEMPTS = 3
+MARKET_CAP_RETRY_DELAY = 1
 logger = logging.getLogger(__name__)
 DEFAULT_HOLDINGS_CSV = "TICKER,ALLOCATION_PCT,GAIN_PCT,TERM\nAAPL,15,25,LT"
 BANNED_TICKERS = {
@@ -37,7 +40,7 @@ The CB Taxable Portfolio Engine applies a multi-objective optimization framework
 
 **Universe Selection & Return Gating**
 
-The screening process begins with the current S&P 500 list and market caps, even for an earlier as-of date. It excludes Energy-sector companies and specified oil, gold, cryptocurrency, and duplicate-share tickers. Missing or invalid market caps are assigned zero, warned about, and ranked last; if all are unavailable, constituent order determines the universe. The default return gate compares stocks with SPY over the same 52 weekly returns (53 weekly closes). You can choose a custom threshold or turn the gate off. Missing SPY data stops the run, rather than silently substituting a zero threshold.
+The screening process begins with the current S&P 500 list and Yahoo Finance marketCap values, even for an earlier as-of date. The tax-exempt and taxable apps fetch and cache data independently, so their inputs and candidate pools can differ even when settings match. It excludes Energy-sector companies and specified oil, gold, cryptocurrency, and duplicate-share tickers. Missing or invalid market caps are assigned zero, warned about, and ranked last; if all are unavailable, constituent order determines the universe. The default return gate compares stocks with SPY over the same 52 weekly returns (53 weekly closes). You can choose a custom threshold or turn the gate off. Missing SPY data stops the run, rather than silently substituting a zero threshold.
 
 **Factor-Based Diversification**
 
@@ -109,7 +112,7 @@ def get_benchmark_return(as_of_date: dt.date) -> float:
     return result
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_sp500_tickers() -> pd.DataFrame:
     response = requests.get(
         "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
@@ -136,17 +139,20 @@ def _positive_market_cap(value: object) -> float:
 
 
 def _get_market_cap(ticker: str) -> tuple[str, float]:
-    try:
-        fast_info: Any = yf.Ticker(ticker).fast_info
-        market_cap = fast_info.get("market_cap") or fast_info.get("marketCap") or 0
-        cap = _positive_market_cap(market_cap)
-        if not cap:
-            logger.warning("Market cap unavailable for %s; assigned zero and ranked last", ticker)
-        return ticker, cap
-    except Exception as error:
-        logger.warning("Market cap unavailable for %s (%s); assigned zero and ranked last",
-                       ticker, type(error).__name__)
-        return ticker, 0.0
+    for attempt in range(MARKET_CAP_ATTEMPTS):
+        try:
+            raw = (yf.Ticker(ticker).info or {}).get("marketCap")
+            cap = _positive_market_cap(raw)
+            if cap:
+                return ticker, cap
+            reason = "missing marketCap" if raw is None else "invalid marketCap"
+        except Exception as error:
+            reason = type(error).__name__
+        if attempt + 1 < MARKET_CAP_ATTEMPTS:
+            time.sleep(MARKET_CAP_RETRY_DELAY * (2 ** attempt))
+    logger.warning("Market cap unavailable for %s (%s); assigned zero and ranked last",
+                   ticker, reason)
+    return ticker, 0.0
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -154,12 +160,17 @@ def get_sorted_by_market_cap(tickers: tuple[str, ...]) -> tuple[list[str], dict[
     caps: dict[str, float] = {}
     if not tickers:
         return [], caps
-    with ThreadPoolExecutor(max_workers=min(12, len(tickers))) as executor:
+    with ThreadPoolExecutor(max_workers=min(MARKET_CAP_MAX_WORKERS, len(tickers))) as executor:
         futures = [executor.submit(_get_market_cap, ticker) for ticker in tickers]
         for future in as_completed(futures):
             ticker, market_cap = future.result()
             caps[ticker] = market_cap
     return sorted(tickers, key=lambda ticker: caps.get(ticker, 0.0), reverse=True), caps
+
+
+def clear_market_data_caches() -> None:
+    for cached in (fetch_sp500_tickers, get_sorted_by_market_cap, get_benchmark_return):
+        cached.clear()
 
 
 def calculate_downside_beta(asset_returns: pd.Series, benchmark_returns: pd.Series) -> float:
@@ -451,6 +462,12 @@ def main() -> None:
 
     sidebar.header("Protocol configuration")
     as_of_date = sidebar.date_input("As-of date", value=dt.date.today())
+    if sidebar.button(
+        "Refresh market data",
+        help="Clear cached constituents, market caps and SPY benchmark returns for this app.",
+    ):
+        clear_market_data_caches()
+        sidebar.success("Market-data caches cleared. Run the protocol to refetch.")
     enforce_gate = sidebar.toggle("Enforce minimum trailing return", value=True)
     if enforce_gate:
         gate_source = sidebar.radio(

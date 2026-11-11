@@ -15,6 +15,12 @@ ticker ascending. New selections respect the three-per-dominant-factor limit.
 Unavailable or invalid market caps become zero, produce a warning, and rank last;
 ties preserve constituent order, including when every market cap is unavailable.
 Market caps and constituent lists are current, not point-in-time historical data.
+Both apps use Yahoo Finance `Ticker.info["marketCap"]`, with up to three attempts,
+one- and two-second retry delays, and up to eight parallel fetches. Constituents
+are cached for one hour and market caps for 24 hours. Each app has a **Refresh
+market data** button, which clears only that app's caches. Because the apps fetch
+and cache separately, they can still use different snapshots and produce different
+candidate pools; a shared snapshot would be needed to guarantee identical inputs.
 
 Retained taxable holdings bypass the return gate, keep their allocations, and count
 toward the target size and factor limits. Existing holdings exceeding a factor limit
